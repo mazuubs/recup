@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 
 const TOKEN                   = process.env.DISCORD_TOKEN;
+const USER_TOKEN              = process.env.USER_TOKEN;
 const GUILD_ID                = process.env.GUILD_ID;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const VANITY                  = 'paradisia';
@@ -9,8 +10,8 @@ const CHECK_INTERVAL_MS       = parseInt(process.env.CHECK_INTERVAL_MS || '500',
 const CLAIM_BURST             = parseInt(process.env.CLAIM_BURST || '5', 10);
 const REQUEST_TIMEOUT_MS      = 2500;
 
-if (!TOKEN || !GUILD_ID || !NOTIFICATION_CHANNEL_ID) {
-  console.error('[ERREUR] Variables manquantes dans .env : DISCORD_TOKEN, GUILD_ID, NOTIFICATION_CHANNEL_ID');
+if (!TOKEN || !GUILD_ID || !NOTIFICATION_CHANNEL_ID || !USER_TOKEN) {
+  console.error('[ERREUR] Variables manquantes : DISCORD_TOKEN, USER_TOKEN, GUILD_ID, NOTIFICATION_CHANNEL_ID');
   process.exit(1);
 }
 
@@ -67,13 +68,9 @@ client.on('interactionCreate', async (interaction) => {
     : 'Pas encore effectuée';
 
   let statusLine;
-  if (missionDone) {
-    statusLine = '✅ Mission accomplie — `discord.gg/paradisia` réclamé !';
-  } else if (firing) {
-    statusLine = '🚀 Tentative de réclamation en cours...';
-  } else {
-    statusLine = '🔍 Surveillance active — vanity toujours pris';
-  }
+  if (missionDone)   statusLine = '✅ Mission accomplie — `discord.gg/paradisia` réclamé !';
+  else if (firing)   statusLine = '🚀 Tentative de réclamation en cours...';
+  else               statusLine = '🔍 Surveillance active — vanity toujours pris';
 
   const embed = new EmbedBuilder()
     .setTitle('📡 Statut du bot Paradisia Vanity Watcher')
@@ -119,8 +116,12 @@ async function checkVanity() {
 async function claimVanity() {
   const res = await fetchWithTimeout(`${DISCORD_API}/guilds/${GUILD_ID}/vanity-url`, {
     method:  'PATCH',
-    headers: BOT_HEADERS,
-    body:    JSON.stringify({ code: VANITY }),
+    headers: {
+      Authorization:  USER_TOKEN,
+      'Content-Type': 'application/json',
+      'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    },
+    body: JSON.stringify({ code: VANITY }),
   });
   const body = await res.json().catch(() => ({}));
   return { status: res.status, body };
@@ -162,22 +163,16 @@ async function tick() {
   lastCheckAt = new Date();
 
   let available;
-  try {
-    available = await checkVanity();
-  } catch {
-    return;
-  }
+  try { available = await checkVanity(); }
+  catch { return; }
 
   if (available === null || available === false) {
-    if (checkCount % 100 === 0) {
-      log(`⏱  ${checkCount} vérifications — "${VANITY}" toujours pris`);
-    }
+    if (checkCount % 100 === 0) log(`⏱  ${checkCount} vérifications — "${VANITY}" toujours pris`);
     return;
   }
 
   firing = true;
   if (checkLoop) { clearInterval(checkLoop); checkLoop = null; }
-
   log(`🎯 DÉTECTION à la vérification #${checkCount} — lancement de la rafale !`);
 
   const result = await fireBurst();
@@ -188,13 +183,12 @@ async function tick() {
     await sendNotification(
       `✅ **Succès !** \`discord.gg/${VANITY}\` a été récupéré après **${checkCount.toLocaleString()} vérifications** !`
     );
-    log('Bot en veille — mission accomplie. Tapez /statut pour confirmer.');
+    log('Bot en veille — mission accomplie.');
   } else {
     log(`❌ Toutes les tentatives ont échoué : ${result.errors.join(' | ')}`);
     await sendNotification(
       `❌ **Échec** : \`discord.gg/${VANITY}\` était disponible mais n'a pas pu être réclamé.\n` +
-      `Détails : \`\`\`${result.errors.slice(0, 2).join('\n')}\`\`\`\n` +
-      `Vérifiez que le bot a la permission **Gérer le serveur** et que votre serveur a le Boost niveau 3.`
+      `Détails : \`\`\`${result.errors.slice(0, 2).join('\n')}\`\`\``
     );
     process.exit(1);
   }
@@ -204,10 +198,7 @@ client.once('ready', async () => {
   log(`✔  Bot connecté : ${client.user.tag}`);
   log(`🔍 Surveillance de "discord.gg/${VANITY}" toutes les ${CHECK_INTERVAL_MS}ms`);
   log(`⚡ Rafale de ${CLAIM_BURST} requêtes simultanées à la détection`);
-  log(`🎯 Serveur cible : ${GUILD_ID}`);
-
   await registerCommands();
-
   tick();
   checkLoop = setInterval(tick, CHECK_INTERVAL_MS);
 });
@@ -215,7 +206,4 @@ client.once('ready', async () => {
 client.on('error', err => log(`Erreur client : ${err.message}`));
 process.on('unhandledRejection', err => log(`Rejet non géré : ${err?.message || err}`));
 
-client.login(TOKEN).catch(err => {
-  log(`Connexion impossible : ${err.message}`);
-  process.exit(1);
-});
+client.login(TOKEN).catch(err => { log(`Connexion impossible : ${err.message}`); process.exit(1); });
