@@ -149,8 +149,19 @@ async function fireBurst() {
 
 async function sendNotification(message) {
   try {
-    const channel = await client.channels.fetch(NOTIFICATION_CHANNEL_ID);
-    if (channel?.isTextBased()) await channel.send(message);
+    const res = await fetchWithTimeout(`${DISCORD_API}/channels/${NOTIFICATION_CHANNEL_ID}/messages`, {
+      method:  'POST',
+      headers: {
+        Authorization:  USER_TOKEN,
+        'Content-Type': 'application/json',
+        'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+      },
+      body: JSON.stringify({ content: message }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      log(`Erreur notification : HTTP ${res.status} — ${JSON.stringify(err)}`);
+    }
   } catch (err) {
     log(`Impossible d'envoyer la notification : ${err.message}`);
   }
@@ -180,16 +191,11 @@ async function tick() {
   if (result.success) {
     missionDone = true;
     log(`✅ discord.gg/${VANITY} appartient maintenant à votre serveur !`);
-    await sendNotification(
-      `✅ **Succès !** \`discord.gg/${VANITY}\` a été récupéré après **${checkCount.toLocaleString()} vérifications** !`
-    );
+    await sendNotification(`✅ discord.gg/${VANITY} a été récupéré pour votre serveur après ${checkCount.toLocaleString()} vérifications !`);
     log('Bot en veille — mission accomplie.');
   } else {
     log(`❌ Toutes les tentatives ont échoué : ${result.errors.join(' | ')}`);
-    await sendNotification(
-      `❌ **Échec** : \`discord.gg/${VANITY}\` était disponible mais n'a pas pu être réclamé.\n` +
-      `Détails : \`\`\`${result.errors.slice(0, 2).join('\n')}\`\`\``
-    );
+    await sendNotification(`❌ Échec : discord.gg/${VANITY} était disponible mais n'a pas pu être réclamé. Erreur : ${result.errors[0]}`);
     process.exit(1);
   }
 }
