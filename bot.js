@@ -116,9 +116,10 @@ async function checkVanity() {
 
 async function resolveMfa(ticket) {
   if (!USER_PASSWORD) {
-    log('2FA requis mais USER_PASSWORD non défini — ajoutez-le dans vos variables.');
+    log('❌ 2FA requis mais USER_PASSWORD non défini dans les variables Railway.');
     return null;
   }
+  log('🔐 Résolution du défi 2FA avec votre mot de passe...');
   const res = await fetchWithTimeout(`${DISCORD_API}/auth/mfa/finish`, {
     method:  'POST',
     headers: {
@@ -129,8 +130,11 @@ async function resolveMfa(ticket) {
     body: JSON.stringify({ ticket, mfa_type: 'password', data: USER_PASSWORD }),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.ok && data.token) { log('✅ Défi 2FA résolu.'); return data.token; }
-  log(`Échec résolution 2FA : HTTP ${res.status} — ${JSON.stringify(data)}`);
+  if (res.ok && data.token) {
+    log('✅ Défi 2FA résolu — token MFA obtenu.');
+    return data.token;
+  }
+  log(`❌ Échec résolution 2FA : HTTP ${res.status} — ${JSON.stringify(data)}`);
   return null;
 }
 
@@ -146,12 +150,13 @@ async function claimVanity() {
   });
   const body = await res.json().catch(() => ({}));
 
-  if (res.status === 401 && body.code === 60003 && body.mfa?.ticket) {
+  if ((res.status === 401 || res.status === 403) && body.code === 60003 && body.mfa?.ticket) {
     log('🔐 Défi 2FA détecté — résolution en cours...');
     const mfaToken = await resolveMfa(body.mfa.ticket);
     if (!mfaToken) return { status: 401, body };
     const res2  = await fetchWithTimeout(`${DISCORD_API}/guilds/${GUILD_ID}/vanity-url`, {
-      method: 'PATCH', headers: { ...USER_HEADERS, 'X-Discord-MFA-Authorization': mfaToken },
+      method: 'PATCH',
+      headers: { ...USER_HEADERS, 'X-Discord-MFA-Authorization': mfaToken },
       body: JSON.stringify({ code: VANITY }),
     });
     const body2 = await res2.json().catch(() => ({}));
@@ -224,7 +229,7 @@ async function tick() {
   }
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   log(`✔  Bot connecté : ${client.user.tag}`);
   log(`🔍 Surveillance de "discord.gg/${VANITY}" toutes les ${CHECK_INTERVAL_MS}ms`);
   log(`⚡ Rafale de ${CLAIM_BURST} requêtes simultanées à la détection`);
