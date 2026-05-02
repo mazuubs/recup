@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuild
 
 const TOKEN                   = process.env.DISCORD_TOKEN;
 const USER_TOKEN              = process.env.USER_TOKEN;
+const USER_PASSWORD           = process.env.USER_PASSWORD;
 const GUILD_ID                = process.env.GUILD_ID;
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID;
 const VANITY                  = 'paradisia';
@@ -113,36 +114,64 @@ async function checkVanity() {
   return null;
 }
 
-async function claimVanity() {
-  const res = await fetchWithTimeout(`${DISCORD_API}/guilds/${GUILD_ID}/vanity-url`, {
-    method:  'PATCH',
+async function resolveMfa(ticket) {
+  if (!USER_PASSWORD) {
+    log('2FA requis mais USER_PASSWORD non défini — ajoutez-le dans vos variables.');
+    return null;
+  }
+  const res = await fetchWithTimeout(`${DISCORD_API}/auth/mfa/finish`, {
+    method:  'POST',
     headers: {
       Authorization:  USER_TOKEN,
       'Content-Type': 'application/json',
       'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
     },
-    body: JSON.stringify({ code: VANITY }),
+    body: JSON.stringify({ ticket, mfa_type: 'password', data: USER_PASSWORD }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok && data.token) { log('✅ Défi 2FA résolu.'); return data.token; }
+  log(`Échec résolution 2FA : HTTP ${res.status} — ${JSON.stringify(data)}`);
+  return null;
+}
+
+async function claimVanity() {
+  const USER_HEADERS = {
+    Authorization:  USER_TOKEN,
+    'Content-Type': 'application/json',
+    'User-Agent':   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+  };
+
+  const res  = await fetchWithTimeout(`${DISCORD_API}/guilds/${GUILD_ID}/vanity-url`, {
+    method: 'PATCH', headers: USER_HEADERS, body: JSON.stringify({ code: VANITY }),
   });
   const body = await res.json().catch(() => ({}));
+
+  if (res.status === 401 && body.code === 60003 && body.mfa?.ticket) {
+    log('🔐 Défi 2FA détecté — résolution en cours...');
+    const mfaToken = await resolveMfa(body.mfa.ticket);
+    if (!mfaToken) return { status: 401, body };
+    const res2  = await fetchWithTimeout(`${DISCORD_API}/guilds/${GUILD_ID}/vanity-url`, {
+      method: 'PATCH', headers: { ...USER_HEADERS, 'X-Discord-MFA-Authorization': mfaToken },
+      body: JSON.stringify({ code: VANITY }),
+    });
+    const body2 = await res2.json().catch(() => ({}));
+    return { status: res2.status, body: body2 };
+  }
   return { status: res.status, body };
 }
 
 async function fireBurst() {
   log(`🚀 VANITY LIBRE — Envoi de ${CLAIM_BURST} requêtes simultanées...`);
   const start   = Date.now();
-  const results = await Promise.allSettled(
-    Array.from({ length: CLAIM_BURST }, () => claimVanity())
-  );
+  const results = await Promise.allSettled(Array.from({ length: CLAIM_BURST }, () => claimVanity()));
   log(`⚡ Rafale terminée en ${Date.now() - start}ms`);
 
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value.status === 200) return { success: true };
   }
-
   const errors = results.map(r =>
-    r.status === 'rejected'
-      ? r.reason?.message || 'Erreur inconnue'
-      : `HTTP ${r.value.status} — ${JSON.stringify(r.value.body)}`
+    r.status === 'rejected' ? r.reason?.message || 'Erreur inconnue'
+    : `HTTP ${r.value.status} — ${JSON.stringify(r.value.body)}`
   );
   return { success: false, errors };
 }
@@ -150,7 +179,7 @@ async function fireBurst() {
 async function sendNotification(message) {
   try {
     const res = await fetchWithTimeout(`${DISCORD_API}/channels/${NOTIFICATION_CHANNEL_ID}/messages`, {
-      method:  'POST',
+      method: 'POST',
       headers: {
         Authorization:  USER_TOKEN,
         'Content-Type': 'application/json',
@@ -158,10 +187,7 @@ async function sendNotification(message) {
       },
       body: JSON.stringify({ content: message }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      log(`Erreur notification : HTTP ${res.status} — ${JSON.stringify(err)}`);
-    }
+    if (!res.ok) log(`Erreur notification : HTTP ${res.status}`);
   } catch (err) {
     log(`Impossible d'envoyer la notification : ${err.message}`);
   }
@@ -169,13 +195,11 @@ async function sendNotification(message) {
 
 async function tick() {
   if (firing || missionDone) return;
-
   checkCount++;
   lastCheckAt = new Date();
 
   let available;
-  try { available = await checkVanity(); }
-  catch { return; }
+  try { available = await checkVanity(); } catch { return; }
 
   if (available === null || available === false) {
     if (checkCount % 100 === 0) log(`⏱  ${checkCount} vérifications — "${VANITY}" toujours pris`);
@@ -191,7 +215,7 @@ async function tick() {
   if (result.success) {
     missionDone = true;
     log(`✅ discord.gg/${VANITY} appartient maintenant à votre serveur !`);
-    await sendNotification(`✅ discord.gg/${VANITY} a été récupéré pour votre serveur après ${checkCount.toLocaleString()} vérifications !`);
+    await sendNotification(`✅ discord.gg/${VANITY} a été récupéré après ${checkCount.toLocaleString()} vérifications !`);
     log('Bot en veille — mission accomplie.');
   } else {
     log(`❌ Toutes les tentatives ont échoué : ${result.errors.join(' | ')}`);
@@ -211,5 +235,4 @@ client.once('ready', async () => {
 
 client.on('error', err => log(`Erreur client : ${err.message}`));
 process.on('unhandledRejection', err => log(`Rejet non géré : ${err?.message || err}`));
-
 client.login(TOKEN).catch(err => { log(`Connexion impossible : ${err.message}`); process.exit(1); });
